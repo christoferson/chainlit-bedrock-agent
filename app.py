@@ -36,24 +36,9 @@ def auth_callback(username: str, password: str) -> Optional[cl.User]:
 
 @cl.on_chat_start
 async def main():
-    bedrock = boto3.client("bedrock", region_name=AWS_REGION)
-    
-    response = bedrock.list_foundation_models(
-        byOutputModality="TEXT"
-    )
-    
-    model_ids = []
-    for item in response["modelSummaries"]:
-        model_ids.append(item['modelId'])
-    
+
     settings = await cl.ChatSettings(
         [
-            Select(
-                id="Model",
-                label="Amazon Bedrock - Model",
-                values=model_ids,
-                initial_index=model_ids.index("anthropic.claude-v2"),
-            ),
             Slider(
                 id="Temperature",
                 label="Temperature",
@@ -131,7 +116,7 @@ async def main(message: cl.Message):
             endSession=False  # true to end the session with the agent.
         )
 
-        await msg.stream_token(".")
+        #await msg.send() #await msg.stream_token(".")
         
         print(f"Answer: {response}")
 
@@ -144,9 +129,13 @@ async def main(message: cl.Message):
             print(f"type={type(event)} event={event}")
             if 'chunk' in event:
                 chunk = event['chunk']
-                token = chunk['bytes'].decode("utf-8")
-                answer += token
+                msg_chunk = ""
+                if 'bytes' in chunk:
+                    token = chunk['bytes'].decode("utf-8")
+                    answer += token
+                    msg_chunk += f"{token}"
                 await msg.stream_token(token)
+                await msg.send()
                 print(event)
                 if 'attribution' in chunk: # If a knowledge base was queried, an attribution object with a list of citations is returned.
                     attribution = chunk['attribution']
@@ -160,9 +149,70 @@ async def main(message: cl.Message):
                             location = reference['location']
                             if location['type'] == 's3':
                                 sources.append(location['s3Location']['uri'])
-                                await msg.stream_token(location['s3Location']['uri'])
+                                await msg.stream_token(location['s3Location']['uri'])    
+                                await msg.send()
+            elif 'trace' in event:
+                trace = event['trace']['trace']
+                msg_trace = ""
+                if 'orchestrationTrace' in trace:
+                    orchestration_trace = trace['orchestrationTrace']
+                    print(f"Orchestration Step: \n")
+                    if 'rationale' in orchestration_trace:
+                        rationale_text = orchestration_trace['rationale']['text']
+                        print(f"  Rationale: {rationale_text} \n")
+                        msg_trace += f"Rationale: {rationale_text} \n"
+                    if 'invocationInput' in orchestration_trace:
+                        invocation_input = orchestration_trace['invocationInput']
+                        invocation_type = invocation_input['invocationType']
+                        invocation_input_kb_id = ""
+                        invocation_input_kb_text = ""
+                        if 'knowledgeBaseLookupInput' in invocation_input:
+                            invocation_input_kb_id = invocation_input['knowledgeBaseLookupInput']['knowledgeBaseId']
+                            invocation_input_kb_text = invocation_input['knowledgeBaseLookupInput']['text']
+                        print(f"  InvocationInput: {invocation_type} KB.ID={invocation_input_kb_id} KB.Text={invocation_input_kb_text} \n")
+                        msg_trace += f"  InvocationInput: {invocation_type} KB.ID={invocation_input_kb_id} KB.Text={invocation_input_kb_text} \n"
+                    if 'observation' in orchestration_trace:
+                        observation = orchestration_trace['observation']
+                        observation_type = observation['type']
+                        kb_type = ""
+                        kb_location = ""
+                        if 'knowledgeBaseLookupOutput' in observation:
+                            kb_lookup = observation['knowledgeBaseLookupOutput']
+                            for kb in kb_lookup['retrievedReferences']:
+                                kb_type = kb['location']['type']
+                                if 'S3' == kb_type:
+                                    kb_location = kb['location']['s3Location']['uri']
+                        observation_type = observation['type']
+                        print(f"  Observation: {observation_type} KB.Type={kb_type} KB.URI={kb_location} \n")
+                        msg_trace += f"  Observation: {observation_type} KB.Type={kb_type} KB.URI={kb_location} \n"
+                    if 'modelInvocationInput' in orchestration_trace:
+                        model_invocation_input = orchestration_trace['modelInvocationInput']['type']
+                        print(f"  ModelInvocationInput: {model_invocation_input} \n")
+                        msg_trace += f"  ModelInvocationInput: {model_invocation_input} \n"
+
+                    await msg.stream_token(msg_trace)    
+                    await msg.send()
+                elif 'preProcessingTrace' in trace:
+                    print(f"PreProcessing Step: \n")
+                    pre_processing_trace = trace['preProcessingTrace']
+                    if 'modelInvocationInput' in pre_processing_trace:
+                        model_invocation_input_type = pre_processing_trace['modelInvocationInput']['type']
+                        model_invocation_input_text = pre_processing_trace['modelInvocationInput']['text']
+                        #print(f"  ModelInvocationInput: Type={model_invocation_input_type} Text={model_invocation_input_text} \n")
+                        print(f"  ModelInvocationInput: Type={model_invocation_input_type} \n")
+                    if 'modelInvocationOutput' in pre_processing_trace:
+                        model_invocation_output_rationale = pre_processing_trace['modelInvocationOutput']['parsedResponse']['rationale']
+                        model_invocation_output_isvalid = pre_processing_trace['modelInvocationOutput']['parsedResponse']['isValid']
+                        print(f"  ModelInvocationOutput: Rationale={model_invocation_output_rationale} IsValid={model_invocation_output_isvalid} \n")
+                elif 'postProcessingTrace' in trace:
+                    print(f"PostProcessingTrace Step: \n")
+                else:
+                    print(f"orchestrationTrace={'orchestrationTrace' in trace} preProcessingTrace={'preProcessingTrace' in trace} ------------------------------------------------------")
+                    print(f"{trace} \n")
+                    print(f"\n")
             else:
                 await msg.stream_token(".")
+                await msg.send()
         print("*********************************************************")
         print(f"Answer: {answer}")
         print("*********************************************************")
@@ -176,6 +226,6 @@ async def main(message: cl.Message):
     except Exception as e:
         logging.error(traceback.format_exc())
 
-    await msg.send()
+    #await msg.send()
 
     print("End")
