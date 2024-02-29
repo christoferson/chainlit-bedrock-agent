@@ -8,11 +8,15 @@ import chainlit as cl
 from chainlit.input_widget import Select, Slider
 from prompt_template import get_template
 from typing import Optional
+import uuid
+import logging
+import traceback
 
 AWS_REGION = os.environ["AWS_REGION"]
 AUTH_ADMIN_USR = os.environ["AUTH_ADMIN_USR"]
 AUTH_ADMIN_PWD = os.environ["AUTH_ADMIN_PWD"]
-
+AGENT_ID = os.environ["AGENT_ID"]
+AGENT_ALIAS_ID = os.environ["AGENT_ALIAS_ID"]
 
 @cl.password_auth_callback
 def auth_callback(username: str, password: str) -> Optional[cl.User]:
@@ -84,96 +88,94 @@ async def main():
             ),
         ]
     ).send()
+
+    ##
+
+    session_id = str(uuid.uuid4())
+
+    cl.user_session.set("session_id", session_id)
+
+
     await setup_agent(settings)
 
 @cl.on_settings_update
 async def setup_agent(settings):
-    #global bedrock_model_id
-    bedrock_model_id = settings["Model"]
-    
-    llm = Bedrock(
-        region_name = AWS_REGION,
-        model_id = settings["Model"],
-        model_kwargs = {
-            "temperature": settings["Temperature"],
-            #"top_p": settings["TopP"],
-            #"top_k": int(settings["TopK"]),
-            #"max_tokens_to_sample": int(settings["MaxTokenCount"]),
-        },
-        streaming = True, #Streaming must be set to True for async operations.
-    )
+   
+    bedrock_agent_runtime = boto3.client('bedrock-agent-runtime', region_name=AWS_REGION)
 
-    provider = bedrock_model_id.split(".")[0]
-    
-    human_prefix="Human"
-    ai_prefix="AI"
+    cl.user_session.set("bedrock_agent_runtime", bedrock_agent_runtime)
 
-    TOP_P = float(settings["TopP"])
-    TOP_K = int(settings["TopK"])
-    MAX_TOKEN_SIZE = int(settings["MaxTokenCount"])
-    
-    # Model specific adjustments
-    if provider == "anthropic": # https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-claude.html
-        llm.model_kwargs["top_p"] = TOP_P
-        llm.model_kwargs["top_k"] = TOP_K
-        llm.model_kwargs["max_tokens_to_sample"] = MAX_TOKEN_SIZE
-        human_prefix="H"
-        ai_prefix="A"
-    elif provider == "ai21": # https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-jurassic2.html
-        llm.model_kwargs["topP"] = TOP_P
-        llm.model_kwargs["maxTokens"] = MAX_TOKEN_SIZE
-        llm.streaming = False
-    elif provider == "cohere": # https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-cohere-command.html
-        llm.model_kwargs["p"] = TOP_P
-        llm.model_kwargs["k"] = TOP_K
-        llm.model_kwargs["max_tokens"] = MAX_TOKEN_SIZE    
-        llm.model_kwargs["stream"] = True
-    elif provider == "amazon": # https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-titan-text.html
-        llm.model_kwargs["topP"] = TOP_P
-        llm.model_kwargs["maxTokenCount"] = MAX_TOKEN_SIZE
-    elif provider == "meta": # https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-meta.html
-        llm.model_kwargs["top_p"] = TOP_P
-        llm.model_kwargs["max_gen_len"] = MAX_TOKEN_SIZE
-    else:
-        print(f"Unsupported Provider: {provider}")
-        raise ValueError(f"Error, Unsupported Provider: {provider}")
-
-    prompt = PromptTemplate(
-        template=get_template(provider),
-        input_variables=["history", "input"],
-    )
-    
-    conversation = ConversationChain(
-        prompt=prompt, 
-        llm=llm, 
-        memory=ConversationBufferMemory(
-            human_prefix=human_prefix,
-            ai_prefix=ai_prefix
-        ),
-        verbose=True,
-    )
-    # Set ConversationChain to the user session
-    cl.user_session.set("llm_chain", conversation)
-    cl.user_session.set("llm_streaming", llm.streaming)
-    
 
 @cl.on_message
 async def main(message: cl.Message):
     # Get ConversationChain from the user session
-    conversation = cl.user_session.get("llm_chain") 
-    llm_streaming = cl.user_session.get("llm_streaming") 
+    session_id = cl.user_session.get("session_id") 
+    bedrock_agent_runtime = cl.user_session.get("bedrock_agent_runtime") 
 
-    if llm_streaming:
-        res = await conversation.ainvoke(
-            message.content, 
-            callbacks=[cl.AsyncLangchainCallbackHandler()],
+    AGENT_ID = os.environ["AGENT_ID"]
+    AGENT_ALIAS_ID = os.environ["AGENT_ALIAS_ID"]
+
+    print(f"AGENT_ID={AGENT_ID} AGENT_ALIAS_ID={AGENT_ALIAS_ID}")
+
+    msg = cl.Message(content="")
+
+    try:
+
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-agent-runtime/client/invoke_agent.html
+        response = bedrock_agent_runtime.invoke_agent(
+            agentId=AGENT_ID, 
+            agentAliasId=AGENT_ALIAS_ID, # Use TSTALIASID as the agentAliasId to invoke the draft version of your agent.
+            sessionId=session_id,  # you continue an existing session with the agent if the value you set for the idle session timeout hasn't been exceeded.
+            inputText=message.content, 
+            enableTrace=True, 
+            endSession=False  # true to end the session with the agent.
         )
-        #print(res)
-        await cl.Message(content=res["response"]).send()
-    else:
-        res = conversation.invoke(
-            message.content, 
-            callbacks=[cl.LangchainCallbackHandler()],
-        )
-        #print(res)
-        await cl.Message(content=res["response"]).send()
+
+        await msg.stream_token(".")
+        
+        print(f"Answer: {response}")
+
+        answer = ""
+        sources = []
+        sources_text = ""
+        generated_text = ""
+        event_stream = response['completion']
+        for event in event_stream:        
+            print(f"type={type(event)} event={event}")
+            if 'chunk' in event:
+                chunk = event['chunk']
+                token = chunk['bytes'].decode("utf-8")
+                answer += token
+                await msg.stream_token(token)
+                print(event)
+                if 'attribution' in chunk: # If a knowledge base was queried, an attribution object with a list of citations is returned.
+                    attribution = chunk['attribution']
+                    for citation in attribution['citations']:
+                        # generatedResponsePart object contains the text generated by the model based on the information from the text in the retrievedReferences
+                        generated_text = citation['generatedResponsePart']['textResponsePart']['text']
+                        # retrievedReferences object contains the exact text in the chunk relevant to the query alongside the S3 location of the data source
+                        for reference in citation['retrievedReferences']: 
+                            reference_text = reference['content']['text']
+                            sources_text += reference_text
+                            location = reference['location']
+                            if location['type'] == 's3':
+                                sources.append(location['s3Location']['uri'])
+                                await msg.stream_token(location['s3Location']['uri'])
+            else:
+                await msg.stream_token(".")
+        print("*********************************************************")
+        print(f"Answer: {answer}")
+        print("*********************************************************")
+        print(f"Sources: {sources}")
+        print("*********************************************************")
+        print(f"Sources Text: {sources_text}")
+        print("*********************************************************")
+        print(f"Generated Text: {generated_text}")
+        print("*********************************************************")
+
+    except Exception as e:
+        logging.error(traceback.format_exc())
+
+    await msg.send()
+
+    print("End")
