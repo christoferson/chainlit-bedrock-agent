@@ -1,12 +1,7 @@
 import os
 import boto3
-from langchain.prompts import PromptTemplate 
-from langchain.chains import ConversationChain
-from langchain.memory import ConversationBufferMemory
-from langchain.llms.bedrock import Bedrock
 import chainlit as cl
-from chainlit.input_widget import Select, Slider
-from prompt_template import get_template
+from chainlit.input_widget import Slider
 from typing import Optional
 import uuid
 import logging
@@ -26,7 +21,7 @@ def auth_callback(username: str, password: str) -> Optional[cl.User]:
     return cl.User(identifier=AUTH_ADMIN_USR, metadata={"role": "admin", "provider": "credentials"})
   else:
     return None
-  
+
 #@cl.author_rename
 #def rename(orig_author: str):
 #    mapping = {
@@ -46,15 +41,7 @@ async def main():
                 min=0,
                 max=1,
                 step=0.1,
-            ),
-            Slider(
-                id="MaxTokenCount",
-                label="Max Token Size",
-                initial=1024,
-                min=256,
-                max=4096,
-                step=256,
-            ),
+            )
         ]
     ).send()
 
