@@ -1,7 +1,7 @@
 import os
 import boto3
 import chainlit as cl
-from chainlit.input_widget import Slider
+from chainlit.input_widget import Slider, TextInput
 from typing import Optional
 import uuid
 import logging
@@ -32,22 +32,17 @@ def auth_callback(username: str, password: str) -> Optional[cl.User]:
 @cl.on_chat_start
 async def main():
 
+    session_id = str(uuid.uuid4())
+
     settings = await cl.ChatSettings(
         [
-            Slider(
-                id="Temperature",
-                label="Temperature",
-                initial=0.3,
-                min=0,
-                max=1,
-                step=0.1,
-            )
+            TextInput(id="AgentID", label="Agent ID", initial=AGENT_ID),
+            TextInput(id="AgentAliasID", label="Agent Alias ID", initial=AGENT_ALIAS_ID),
+            TextInput(id="SessionID", label="Session ID", initial=session_id),
         ]
     ).send()
 
     ##
-
-    session_id = str(uuid.uuid4())
 
     cl.user_session.set("session_id", session_id)
 
@@ -67,8 +62,8 @@ async def main(message: cl.Message):
     session_id = cl.user_session.get("session_id") 
     bedrock_agent_runtime = cl.user_session.get("bedrock_agent_runtime") 
 
-    AGENT_ID = os.environ["AGENT_ID"]
-    AGENT_ALIAS_ID = os.environ["AGENT_ALIAS_ID"]
+    #AGENT_ID = os.environ["AGENT_ID"]
+    #AGENT_ALIAS_ID = os.environ["AGENT_ALIAS_ID"]
 
     print(f"AGENT_ID={AGENT_ID} AGENT_ALIAS_ID={AGENT_ALIAS_ID}")
 

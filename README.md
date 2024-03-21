@@ -1,6 +1,17 @@
 # chainlit-bedrock-agent
 Chainlit Bedrock Agent
 
+##### Documentation
+
+- Pre-processing
+
+- Orchestration
+
+- Knowledge base response generation
+
+- Post-processing (disabled by default)
+
+
 ##### Install Dependencies
 
 pip install --upgrade boto3
